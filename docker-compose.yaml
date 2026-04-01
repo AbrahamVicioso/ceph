@@ -1,0 +1,409 @@
+version: "3.8"
+
+# ===========================================================================
+# CEPH STORAGE CLUSTER - ARQUITECTURA COMPLETA CORREGIDA
+# Imagen base: quay.io/ceph/ceph:v18  (sin el entrypoint problemático)
+# Los OSDs usan comando directo ceph-osd para evitar el bug de daemon image
+# ===========================================================================
+
+volumes:
+  mon1_data:
+  mon2_data:
+  mon3_data:
+  osd0_data:
+  osd1_data:
+  osd2_data:
+  osd3_data:
+  mds1_data:
+  mds2_data:
+  mgr1_data:
+  mgr2_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  ceph-cluster:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+services:
+
+  # =========================================================================
+  # BOOTSTRAP - Solo la primera vez
+  # Genera: ceph.conf, keyrings, monmap
+  # Cuando veas "=== BOOTSTRAP OK ===" en logs:
+  #   docker compose stop ceph-bootstrap
+  # =========================================================================
+  ceph-bootstrap:
+    image: quay.io/ceph/ceph:v18
+    container_name: ceph-bootstrap
+    hostname: ceph-bootstrap
+    networks:
+      ceph-cluster:
+        ipv4_address: 172.20.0.5
+    volumes:
+      - ./ceph-config:/etc/ceph
+      - mon1_data:/var/lib/ceph/mon/ceph-mon1
+      - mon2_data:/var/lib/ceph/mon/ceph-mon2
+      - mon3_data:/var/lib/ceph/mon/ceph-mon3
+      - ./scripts/bootstrap.sh:/bootstrap.sh:ro
+    entrypoint: ["bash", "/bootstrap.sh"]
+    environment:
+      CEPH_FSID: "a7f62e58-1234-5678-abcd-aabbccddeeff"
+      MON_IP: "172.20.0.10"
+      CEPH_PUBLIC_NETWORK: "172.20.0.0/24"
+    restart: "no"
+
+  # =========================================================================
+  # MONITORES
+  # =========================================================================
+  mon1:
+    image: quay.io/ceph/ceph:v18
+    container_name: ceph-mon1
+    hostname: mon1
+    networks:
+      ceph-cluster:
+        ipv4_address: 172.20.0.10
+    volumes:
+      - ./ceph-config:/etc/ceph
+      - mon1_data:/var/lib/ceph/mon/ceph-mon1
+    command: ["ceph-mon", "--foreground", "--id", "mon1", "--setuser", "ceph", "--setgroup", "ceph"]
+    healthcheck:
+      test: ["CMD", "ceph", "--conf", "/etc/ceph/ceph.conf", "mon", "stat"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+    restart: unless-stopped
+
+  mon2:
+    image: quay.io/ceph/ceph:v18
+    container_name: ceph-mon2
+    hostname: mon2
+    networks:
+      ceph-cluster:
+        ipv4_address: 172.20.0.11
+    volumes:
+      - ./ceph-config:/etc/ceph
+      - mon2_data:/var/lib/ceph/mon/ceph-mon2
+    command: ["ceph-mon", "--foreground", "--id", "mon2", "--setuser", "ceph", "--setgroup", "ceph"]
+    restart: unless-stopped
+    depends_on:
+      - mon1
+
+  mon3:
+    image: quay.io/ceph/ceph:v18
+    container_name: ceph-mon3
+    hostname: mon3
+    networks:
+      ceph-cluster:
+        ipv4_address: 172.20.0.12
+    volumes:
+      - ./ceph-config:/etc/ceph
+      - mon3_data:/var/lib/ceph/mon/ceph-mon3
+    command: ["ceph-mon", "--foreground", "--id", "mon3", "--setuser", "ceph", "--setgroup", "ceph"]
+    restart: unless-stopped
+    depends_on:
+      - mon1
+
+  # =========================================================================
+  # MANAGERS
+  # =========================================================================
+  mgr1:
+    image: quay.io/ceph/ceph:v18
+    container_name: ceph-mgr1
+    hostname: mgr1
+    networks:
+      ceph-cluster:
+        ipv4_address: 172.20.0.20
+    ports:
+      - "8443:8443"
+      - "9283:9283"
+    volumes:
+      - ./ceph-config:/etc/ceph
+      - mgr1_data:/var/lib/ceph/mgr
+      - ./scripts/mgr-start.sh:/mgr-start.sh:ro
+    environment:
+      MGR_ID: "mgr1"
+    entrypoint: ["bash", "/mgr-start.sh"]
+    restart: unless-stopped
+    depends_on:
+      mon1:
+        condition: service_healthy
+
+  mgr2:
+    image: quay.io/ceph/ceph:v18
+    container_name: ceph-mgr2
+    hostname: mgr2
+    networks:
+      ceph-cluster:
+        ipv4_address: 172.20.0.21
+    volumes:
+      - ./ceph-config:/etc/ceph
+      - mgr2_data:/var/lib/ceph/mgr
+      - ./scripts/mgr-start.sh:/mgr-start.sh:ro
+    environment:
+      MGR_ID: "mgr2"
+    entrypoint: ["bash", "/mgr-start.sh"]
+    restart: unless-stopped
+    depends_on:
+      - mgr1
+
+  # =========================================================================
+  # OSDs - Comando directo ceph-osd (evita el bug del entrypoint de daemon)
+  # El script osd-start.sh inicializa el OSD si no existe, luego lo arranca
+  # =========================================================================
+  osd0:
+    image: quay.io/ceph/ceph:v18
+    container_name: ceph-osd0
+    hostname: osd0
+    networks:
+      ceph-cluster:
+        ipv4_address: 172.20.0.30
+    volumes:
+      - ./ceph-config:/etc/ceph
+      - osd0_data:/var/lib/ceph/osd/ceph-0
+      - ./scripts/osd-start.sh:/osd-start.sh:ro
+    environment:
+      OSD_ID: "0"
+      OSD_PATH: "/var/lib/ceph/osd/ceph-0"
+    entrypoint: ["bash", "/osd-start.sh"]
+    privileged: true
+    restart: unless-stopped
+    depends_on:
+      mon1:
+        condition: service_healthy
+
+  osd1:
+    image: quay.io/ceph/ceph:v18
+    container_name: ceph-osd1
+    hostname: osd1
+    networks:
+      ceph-cluster:
+        ipv4_address: 172.20.0.31
+    volumes:
+      - ./ceph-config:/etc/ceph
+      - osd1_data:/var/lib/ceph/osd/ceph-1
+      - ./scripts/osd-start.sh:/osd-start.sh:ro
+    environment:
+      OSD_ID: "1"
+      OSD_PATH: "/var/lib/ceph/osd/ceph-1"
+    entrypoint: ["bash", "/osd-start.sh"]
+    privileged: true
+    restart: unless-stopped
+    depends_on:
+      mon1:
+        condition: service_healthy
+
+  osd2:
+    image: quay.io/ceph/ceph:v18
+    container_name: ceph-osd2
+    hostname: osd2
+    networks:
+      ceph-cluster:
+        ipv4_address: 172.20.0.32
+    volumes:
+      - ./ceph-config:/etc/ceph
+      - osd2_data:/var/lib/ceph/osd/ceph-2
+      - ./scripts/osd-start.sh:/osd-start.sh:ro
+    environment:
+      OSD_ID: "2"
+      OSD_PATH: "/var/lib/ceph/osd/ceph-2"
+    entrypoint: ["bash", "/osd-start.sh"]
+    privileged: true
+    restart: unless-stopped
+    depends_on:
+      mon1:
+        condition: service_healthy
+
+  osd3:
+    image: quay.io/ceph/ceph:v18
+    container_name: ceph-osd3
+    hostname: osd3
+    networks:
+      ceph-cluster:
+        ipv4_address: 172.20.0.33
+    volumes:
+      - ./ceph-config:/etc/ceph
+      - osd3_data:/var/lib/ceph/osd/ceph-3
+      - ./scripts/osd-start.sh:/osd-start.sh:ro
+    environment:
+      OSD_ID: "3"
+      OSD_PATH: "/var/lib/ceph/osd/ceph-3"
+    entrypoint: ["bash", "/osd-start.sh"]
+    privileged: true
+    restart: unless-stopped
+    depends_on:
+      mon1:
+        condition: service_healthy
+
+  # =========================================================================
+  # MDS - Metadata Servers (CephFS)
+  # =========================================================================
+  mds1:
+    image: quay.io/ceph/ceph:v18
+    container_name: ceph-mds1
+    hostname: mds1
+    networks:
+      ceph-cluster:
+        ipv4_address: 172.20.0.40
+    volumes:
+      - ./ceph-config:/etc/ceph
+      - mds1_data:/var/lib/ceph/mds
+      - ./scripts/mds-start.sh:/mds-start.sh:ro
+    environment:
+      MDS_ID: "mds1"
+      CEPHFS_NAME: "cephfs"
+    entrypoint: ["bash", "/mds-start.sh"]
+    restart: unless-stopped
+    depends_on:
+      - osd0
+      - osd1
+      - osd2
+
+  mds2:
+    image: quay.io/ceph/ceph:v18
+    container_name: ceph-mds2
+    hostname: mds2
+    networks:
+      ceph-cluster:
+        ipv4_address: 172.20.0.41
+    volumes:
+      - ./ceph-config:/etc/ceph
+      - mds2_data:/var/lib/ceph/mds
+      - ./scripts/mds-start.sh:/mds-start.sh:ro
+    environment:
+      MDS_ID: "mds2"
+      CEPHFS_NAME: "cephfs"
+    entrypoint: ["bash", "/mds-start.sh"]
+    restart: unless-stopped
+    depends_on:
+      - mds1
+
+  # =========================================================================
+  # RGW - RADOS Gateway S3/Swift
+  # =========================================================================
+  rgw1:
+    image: quay.io/ceph/ceph:v18
+    container_name: ceph-rgw1
+    hostname: rgw1
+    networks:
+      ceph-cluster:
+        ipv4_address: 172.20.0.50
+    volumes:
+      - ./ceph-config:/etc/ceph
+      - ./scripts/rgw-start.sh:/rgw-start.sh:ro
+    environment:
+      RGW_ID: "rgw1"
+      RGW_PORT: "7480"
+    entrypoint: ["bash", "/rgw-start.sh"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7480/"]
+      interval: 20s
+      timeout: 10s
+      retries: 15
+      start_period: 120s
+    restart: unless-stopped
+    depends_on:
+      - osd0
+      - osd1
+      - osd2
+
+  rgw2:
+    image: quay.io/ceph/ceph:v18
+    container_name: ceph-rgw2
+    hostname: rgw2
+    networks:
+      ceph-cluster:
+        ipv4_address: 172.20.0.51
+    volumes:
+      - ./ceph-config:/etc/ceph
+      - ./scripts/rgw-start.sh:/rgw-start.sh:ro
+    environment:
+      RGW_ID: "rgw2"
+      RGW_PORT: "7481"
+    entrypoint: ["bash", "/rgw-start.sh"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7481/"]
+      interval: 20s
+      timeout: 10s
+      retries: 15
+      start_period: 120s
+    restart: unless-stopped
+    depends_on:
+      - rgw1
+
+  # =========================================================================
+  # HAPROXY - Load Balancer
+  # =========================================================================
+  haproxy:
+    image: haproxy:2.9-alpine
+    container_name: ceph-haproxy
+    hostname: haproxy
+    networks:
+      ceph-cluster:
+        ipv4_address: 172.20.0.60
+    ports:
+      - "80:80"
+      - "8404:8404"
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    restart: unless-stopped
+    depends_on:
+      - rgw1
+      - rgw2
+
+  # =========================================================================
+  # PROMETHEUS
+  # =========================================================================
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    container_name: ceph-prometheus
+    hostname: prometheus
+    networks:
+      ceph-cluster:
+        ipv4_address: 172.20.0.70
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+    restart: unless-stopped
+    depends_on:
+      - mgr1
+
+  # =========================================================================
+  # GRAFANA
+  # URL: http://localhost:3000  |  admin / ceph_admin_2024
+  # =========================================================================
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: ceph-grafana
+    hostname: grafana
+    networks:
+      ceph-cluster:
+        ipv4_address: 172.20.0.71
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ceph_admin_2024
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+    depends_on:
+      - prometheus
