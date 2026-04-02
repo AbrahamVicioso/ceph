@@ -20,21 +20,22 @@ rule_files:
 
 scrape_configs:
 
-  # Ceph MGR — métricas nativas del cluster
+  # Ceph MGR — métricas nativas del cluster (mgr1 activo, mgr2 standby)
   - job_name: 'ceph_mgr'
     static_configs:
       - targets:
           - 'mgr1:9283'
+          - 'mgr2:9283'
     relabel_configs:
       - source_labels: [__address__]
         target_label: instance
 
-  # HAProxy stats
+  # HAProxy — endpoint Prometheus nativo (HAProxy 2.x)
   - job_name: 'haproxy'
     static_configs:
       - targets:
           - 'haproxy:8404'
-    metrics_path: '/stats;csv'
+    metrics_path: '/metrics'
 
   # Prometheus itself
   - job_name: 'prometheus'

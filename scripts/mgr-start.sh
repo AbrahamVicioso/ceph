@@ -34,6 +34,15 @@ fi
 
 chown -R ceph:ceph /var/lib/ceph/mgr/
 
+# Habilitar módulo Prometheus (solo mgr1 lo hace; es idempotente)
+if [ "$MGR_ID" = "mgr1" ]; then
+  echo "=== Habilitando módulo Prometheus en MGR ==="
+  ceph mgr module enable prometheus --force 2>/dev/null || true
+  ceph config set mgr mgr/prometheus/server_addr 0.0.0.0 2>/dev/null || true
+  ceph config set mgr mgr/prometheus/port 9283 2>/dev/null || true
+  echo "=== Módulo Prometheus habilitado ==="
+fi
+
 echo "=== Iniciando ceph-mgr $MGR_ID ==="
 exec ceph-mgr --foreground -i $MGR_ID \
   --conf /etc/ceph/ceph.conf \
